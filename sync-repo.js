@@ -3,6 +3,7 @@ import fs from "fs-extra";
 import path from "path";
 import inquirer from "inquirer";
 import simpleGit from "simple-git";
+import ignore from "ignore";
 
 const CONFIG_FILE = ".repo-sync.json";
 
@@ -16,14 +17,37 @@ async function getFileHash(filePath) {
 }
 
 /**
+ * Load and parse .gitignore file from directory
+ */
+async function loadGitignore(dir) {
+  const gitignorePath = path.join(dir, '.gitignore');
+  if (await fs.pathExists(gitignorePath)) {
+    const content = await fs.readFile(gitignorePath, 'utf-8');
+    const ig = ignore().add(content);
+    // Always ignore .git directory
+    ig.add('.git');
+    return ig;
+  }
+  // Default patterns even without .gitignore
+  return ignore().add(['.git']);
+}
+
+/**
  * Recursively list files in a directory
  */
-async function listFiles(dir) {
+async function listFiles(dir, gitignoreFilter) {
   const files = [];
   async function walk(current) {
     const items = await fs.readdir(current);
     for (const item of items) {
       const full = path.join(current, item);
+      const relative = path.relative(dir, full);
+      
+      // Skip if ignored
+      if (gitignoreFilter.ignores(relative)) {
+        continue;
+      }
+      
       const stat = await fs.stat(full);
       if (stat.isDirectory()) {
         await walk(full);
@@ -40,7 +64,8 @@ async function listFiles(dir) {
  * Copy changed or new files from source → destination
  */
 async function syncDirs(source, dest) {
-  const srcFiles = await listFiles(source);
+  const gitignoreFilter = await loadGitignore(source);
+  const srcFiles = await listFiles(source, gitignoreFilter);
   let changes = [];
 
   for (const file of srcFiles) {
@@ -83,12 +108,20 @@ async function main() {
     config.repoA = path.resolve(answers.repoA);
     config.repoB = path.resolve(answers.repoB);
 
-    // Initialize repoB if it doesn't exist
+    // Ensure repoB directory exists
     if (!(await fs.pathExists(config.repoB))) {
       await fs.mkdirp(config.repoB);
-      const git = simpleGit(config.repoB);
-      await git.init();
-      console.log("📂 Created and initialized Repo B:", config.repoB);
+      console.log("📂 Created Repo B directory:", config.repoB);
+    }
+
+    // Check if repoB is a git repository, initialize if not
+    const gitB = simpleGit(config.repoB);
+    try {
+      await gitB.status();
+    } catch (error) {
+      // Not a git repository, initialize it
+      await gitB.init();
+      console.log("📂 Initialized Repo B as Git repository:", config.repoB);
     }
 
     await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
@@ -97,6 +130,16 @@ async function main() {
 
   const repoA = config.repoA;
   const repoB = config.repoB;
+
+  // Ensure repoB is a git repository (for existing configs too)
+  const gitB = simpleGit(repoB);
+  try {
+    await gitB.status();
+  } catch (error) {
+    // Not a git repository, initialize it
+    await gitB.init();
+    console.log("📂 Initialized Repo B as Git repository:", repoB);
+  }
 
   console.log(`🔍 Checking for changes between:\nA: ${repoA}\nB: ${repoB}`);
 
