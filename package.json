@@ -1,0 +1,8 @@
+{
+    "type": "module",
+    "dependencies": {
+      "fs-extra": "^11.0.0",
+      "inquirer": "^9.0.0", 
+      "simple-git": "^3.0.0"
+    }
+  }
